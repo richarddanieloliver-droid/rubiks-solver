@@ -1,51 +1,52 @@
 import { useEffect, useState } from 'react'
-import { advance, startGuide, STAGES, type Answer, type Guide } from './lib/guided'
+import { classify, sameCentres } from './lib/colors'
+import { COLOR_NAMES, centreIndex, type Color, type Cube } from './lib/cube'
+import { solve, type Stage } from './lib/solver'
 import { CubeIso } from './components/CubeIso'
-import { GuideView } from './components/GuideView'
 import { Notation } from './components/Notation'
-import { solvedCube } from './lib/cube'
+import { Review, type Face } from './components/Review'
+import { Scanner, type Shot } from './components/Scanner'
+import { SolutionView } from './components/SolutionView'
 
-const KEY = 'rubiks-guide-v2'
+type Screen = 'scan' | 'review' | 'hold' | 'solve'
 
-interface Saved {
-  guide: Guide
-  /** Earlier states we can go back to (only before any moves were done). */
-  undo: Guide[]
-}
-
-function load(): Saved {
-  try {
-    const s = JSON.parse(localStorage.getItem(KEY) ?? 'null')
-    if (s?.guide?.queue?.length) return s
-  } catch {
-    // storage unavailable
-  }
-  return { guide: startGuide(), undo: [] }
-}
+const HAND_CENTRES: Color[] = ['W', 'Y', 'G', 'B', 'R', 'O']
+const blankFaces = (): Face[] => HAND_CENTRES.map((c) => Array.from({ length: 9 }, (_, i) => (i === 4 ? c : null)))
 
 export function App() {
-  const [{ guide, undo }, setSaved] = useState<Saved>(load)
+  const [screen, setScreen] = useState<Screen>('scan')
+  const [shots, setShots] = useState<Shot[]>([])
+  const [faces, setFaces] = useState<Face[]>([])
+  const [scanError, setScanError] = useState<string | null>(null)
+  const [cube, setCube] = useState<Cube | null>(null)
+  const [stages, setStages] = useState<Stage[]>([])
   const [help, setHelp] = useState(false)
 
+  // Once six faces are in, read the colours and move on to checking them.
   useEffect(() => {
-    try {
-      localStorage.setItem(KEY, JSON.stringify({ guide, undo }))
-    } catch {
-      // storage unavailable
+    if (shots.length < 6) return setScanError(null)
+    const twice = sameCentres(shots.map((s) => s.samples[4]))
+    if (twice) {
+      setScanError(
+        `Photos ${twice[0] + 1} and ${twice[1] + 1} look like the same face (their centres match). Delete one and scan the face you missed.`,
+      )
+      return
     }
-  }, [guide, undo])
+    setFaces(chunk(classify(shots.flatMap((s) => s.samples))))
+    setScreen('review')
+  }, [shots])
 
-  const prompt = guide.queue[0]
-  const answer = (a: Answer) => {
-    const next = advance(guide, a)
-    // Answers that are just taps or choices can be taken back; once moves have
-    // been done on the real cube they can't.
-    const undoable = !('done' in a)
-    setSaved({ guide: next, undo: undoable ? [...undo, guide] : [] })
+  const restart = () => {
+    setShots([])
+    setFaces([])
+    setCube(null)
+    setScreen('scan')
+  }
+
+  const go = (s: Screen) => {
+    setScreen(s)
     window.scrollTo(0, 0)
   }
-  const restart = () => setSaved({ guide: startGuide(), undo: [] })
-  const stage = STAGES[Math.min(guide.stage, STAGES.length - 1)]
 
   return (
     <main>
@@ -54,9 +55,9 @@ export function App() {
           <span className="logo" aria-hidden /> Cube Coach
         </h1>
         <div className="row">
-          {prompt.kind !== 'orient' && !help && (
-            <button className="link" onClick={() => confirm('Start again from the beginning?') && restart()}>
-              Start over
+          {screen !== 'scan' && !help && (
+            <button className="link" onClick={restart}>
+              New cube
             </button>
           )}
           <button className="link" onClick={() => setHelp((h) => !h)}>
@@ -67,50 +68,70 @@ export function App() {
 
       {help ? (
         <Notation onClose={() => setHelp(false)} />
-      ) : prompt.kind === 'done' ? (
-        <div className="card center">
-          <h2>Solved! 🎉</h2>
-          <CubeIso cube={solvedCube()} />
-          <button className="primary" onClick={restart}>
-            Solve another
-          </button>
-        </div>
+      ) : screen === 'scan' ? (
+        <Scanner
+          shots={shots}
+          setShots={setShots}
+          error={scanError}
+          onManual={() => {
+            setShots([])
+            setFaces(blankFaces())
+            go('review')
+          }}
+        />
+      ) : screen === 'review' ? (
+        <Review
+          faces={faces}
+          photos={shots.map((s) => s.photo)}
+          setFaces={setFaces}
+          onRescan={restart}
+          onSolve={(c) => {
+            setCube(c)
+            setStages(solve(c))
+            go('hold')
+          }}
+        />
+      ) : screen === 'hold' && cube ? (
+        <Hold cube={cube} solved={stages.length === 0} onReady={() => go('solve')} />
       ) : (
-        <>
-          {prompt.kind === 'orient' ? (
-            <p className="lede">
-              Get step-by-step help solving your cube, starting from the white cross. No need to enter every face: the app
-              asks you to find one piece at a time.
-            </p>
-          ) : (
-            <>
-              <ol className="stages" aria-label="Stages">
-                {STAGES.map((s, i) => (
-                  <li key={s.name} className={i === guide.stage ? 'on' : i < guide.stage ? 'done' : ''} title={s.name}>
-                    {i < guide.stage ? '✓' : i + 1}
-                  </li>
-                ))}
-              </ol>
-              <header className="stage-head">
-                <p className="eyebrow">
-                  Stage {guide.stage + 1} of {STAGES.length}
-                </p>
-                <h2>{stage.name}</h2>
-                <p className="muted small">{stage.intro}</p>
-              </header>
-            </>
-          )}
-          <GuideView prompt={prompt} cube={guide.cube} onAnswer={answer} />
-          {undo.length > 0 && (
-            <button
-              className="link"
-              onClick={() => setSaved({ guide: undo[undo.length - 1], undo: undo.slice(0, -1) })}
-            >
-              {prompt.kind === 'moves' ? '‹ Tapped the wrong square? Go back' : '‹ Undo my last answer'}
-            </button>
-          )}
-        </>
+        <SolutionView stages={stages} onEdit={restart} />
       )}
     </main>
+  )
+}
+
+const chunk = (colors: Color[]): Face[] => [0, 1, 2, 3, 4, 5].map((f) => colors.slice(f * 9, f * 9 + 9))
+
+function Hold({ cube, solved, onReady }: { cube: Cube; solved: boolean; onReady: () => void }) {
+  const top = COLOR_NAMES[cube[centreIndex('U')]]
+  const front = COLOR_NAMES[cube[centreIndex('F')]]
+  if (solved)
+    return (
+      <div className="card center">
+        <h2>Your cube is already solved! 🎉</h2>
+        <CubeIso cube={cube} />
+      </div>
+    )
+  return (
+    <div className="card">
+      <h3>Hold your cube like this</h3>
+      <p>
+        <b>{top[0].toUpperCase() + top.slice(1)}</b> centre on top, <b>{front}</b> centre facing you. Check the squares match
+        the picture — then keep holding it this way.
+      </p>
+      <div className="views">
+        <figure>
+          <CubeIso cube={cube} size={210} />
+          <figcaption>What you should see</figcaption>
+        </figure>
+        <figure>
+          <CubeIso cube={cube} view="y2" size={110} />
+          <figcaption>The back (turn it round to check, then turn it back)</figcaption>
+        </figure>
+      </div>
+      <button className="primary wide" onClick={onReady}>
+        I’m holding it like this — show me the moves
+      </button>
+    </div>
   )
 }

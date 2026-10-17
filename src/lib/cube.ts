@@ -6,8 +6,7 @@
 // x points right, y up, z towards you (front).
 
 export type Color = 'W' | 'Y' | 'G' | 'B' | 'R' | 'O'
-/** A cube's stickers; null where a sticker's colour isn't known. */
-export type Cube = (Color | null)[]
+export type Cube = Color[]
 export type Vec = [number, number, number]
 
 export const FACES = ['U', 'R', 'F', 'D', 'L', 'B'] as const
@@ -142,7 +141,7 @@ export function toMoves(moves: string | string[]): string[] {
 export function applyMove(cube: Cube, move: string): Cube {
   const perm = MOVES[move]
   if (!perm) throw new Error(`Unknown move ${move}`)
-  const out: Cube = new Array(54)
+  const out = new Array<Color>(54)
   for (let i = 0; i < 54; i++) out[perm[i]] = cube[i]
   return out
 }
@@ -212,19 +211,13 @@ export const pieceSolved = (cube: Cube, slot: number[]) => slot.every((i) => cub
 
 export const colorsOf = (cube: Cube, slot: number[]) => slot.map((i) => cube[i])
 
-export const sameSet = (a: (Color | null)[], b: (Color | null)[]) => a.length === b.length && a.every((c) => b.includes(c))
+export const sameSet = (a: Color[], b: Color[]) => a.length === b.length && a.every((c) => b.includes(c))
 
 /** The slot currently holding the piece with exactly these colours. */
-export function findPiece(cube: Cube, colors: Color[]): number[] | undefined {
+export function findPiece(cube: Cube, colors: Color[]): number[] {
   const slots = colors.length === 2 ? EDGE_SLOTS : CORNER_SLOTS
-  return slots.find((s) => sameSet(colorsOf(cube, s), colors))
+  return slots.find((s) => sameSet(colorsOf(cube, s), colors))!
 }
-
-/** The edge or corner slot that contains this sticker (undefined for centres). */
-export const slotOf = (sticker: number) => [...EDGE_SLOTS, ...CORNER_SLOTS].find((s) => s.includes(sticker))
-
-/** True when every known sticker matches the centre on its face. */
-export const knownSolved = (cube: Cube) => cube.every((c, i) => c === null || c === homeColor(cube, i))
 
 /** The slot where the piece with these colours belongs (given the centres). */
 export function homeSlot(cube: Cube, colors: Color[]): number[] {
