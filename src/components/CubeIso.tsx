@@ -1,4 +1,4 @@
-import { COLOR_HEX, NORMALS, STICKERS, type Cube, type Face, type Vec } from '../lib/cube'
+import { COLOR_HEX, MOVES, NORMALS, STICKERS, applyMoves, type Color, type Cube, type Face, type Vec } from '../lib/cube'
 import { arrowsFor, movingStickers } from '../lib/notation'
 
 // Isometric view from front-top-right, the way you look at a cube in your hand.
@@ -32,7 +32,24 @@ function quad(centre: Vec, face: Face, h: number) {
 
 const stickerCentre = (i: number): Vec => add(STICKERS[i].pos, STICKERS[i].normal, 0.5)
 
-export function CubeIso({ cube, move, size = 240 }: { cube: Cube; move?: string | null; size?: number }) {
+interface Props {
+  cube: Cube
+  /** Show the move's arrows and dim stickers that don't move. */
+  move?: string | null
+  /** Draw the cube as it looks after this whole-cube turn (e.g. "y2" for the back). */
+  view?: string
+  size?: number
+  canTap?: (index: number) => boolean
+  onTap?: (index: number) => void
+  selected?: number | null
+  selectedColor?: Color
+}
+
+export function CubeIso({ cube, move, view, size = 240, canTap, onTap, selected, selectedColor }: Props) {
+  const shown = view ? applyMoves(cube, [view]) : cube
+  // Which original sticker is drawn at each position.
+  const original = STICKERS.map((s) => s.index)
+  if (view) MOVES[view].forEach((dest, i) => (original[dest] = i))
   const moving = move ? movingStickers(move) : new Set<number>()
   const arrows = move ? arrowsFor(move) : []
   return (
@@ -45,15 +62,25 @@ export function CubeIso({ cube, move, size = 240 }: { cube: Cube; move?: string 
       {VISIBLE.map((f) => (
         <polygon key={f} points={quad(NORMALS[f].map((v) => v * 1.5) as Vec, f, 1.5)} fill="var(--cube-body)" />
       ))}
-      {STICKERS.filter((s) => VISIBLE.includes(s.face)).map((s) => (
-        <polygon
-          key={s.index}
-          points={quad(stickerCentre(s.index), s.face, 0.43)}
-          fill={COLOR_HEX[cube[s.index]] ?? '#888'}
-          opacity={moving.size && !moving.has(s.index) ? 0.35 : 1}
-          strokeLinejoin="round"
-        />
-      ))}
+      {STICKERS.filter((s) => VISIBLE.includes(s.face)).map((s) => {
+        const orig = original[s.index]
+        const tappable = !!onTap && !!canTap?.(orig)
+        const isSel = selected === orig
+        const color = isSel && selectedColor ? selectedColor : shown[s.index]
+        return (
+          <polygon
+            key={s.index}
+            points={quad(stickerCentre(s.index), s.face, 0.43)}
+            fill={color ? COLOR_HEX[color] : 'var(--unknown)'}
+            opacity={moving.size && !moving.has(s.index) ? 0.35 : 1}
+            stroke={isSel ? 'var(--accent)' : tappable ? 'var(--tap-outline)' : 'none'}
+            strokeWidth={isSel ? 0.14 : 0.05}
+            strokeLinejoin="round"
+            className={tappable ? 'tappable' : undefined}
+            onClick={tappable ? () => onTap!(orig) : undefined}
+          />
+        )
+      })}
       {arrows.map(([from, to]) => {
         const [x1, y1] = project(stickerCentre(from))
         const [x2, y2] = project(stickerCentre(to))

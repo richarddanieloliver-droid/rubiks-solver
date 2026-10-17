@@ -1,45 +1,51 @@
 import { useEffect, useState } from 'react'
-import type { Cube } from './lib/cube'
-import { solve, type Stage } from './lib/solver'
-import { CubeInput, blankDraft, type Draft } from './components/CubeInput'
+import { advance, startGuide, STAGES, type Answer, type Guide } from './lib/guided'
+import { CubeIso } from './components/CubeIso'
+import { GuideView } from './components/GuideView'
 import { Notation } from './components/Notation'
-import { SolutionView } from './components/SolutionView'
+import { solvedCube } from './lib/cube'
 
-const KEY = 'rubiks-draft'
+const KEY = 'rubiks-guide'
 
-function loadDraft(): Draft {
+interface Saved {
+  guide: Guide
+  /** Earlier states we can go back to (only before any moves were done). */
+  undo: Guide[]
+}
+
+function load(): Saved {
   try {
-    const saved = JSON.parse(localStorage.getItem(KEY) ?? 'null')
-    if (Array.isArray(saved) && saved.length === 54) return saved
+    const s = JSON.parse(localStorage.getItem(KEY) ?? 'null')
+    if (s?.guide?.queue?.length) return s
   } catch {
-    // ignore unavailable storage
+    // storage unavailable
   }
-  return blankDraft()
+  return { guide: startGuide(), undo: [] }
 }
 
 export function App() {
-  const [draft, setDraft] = useState<Draft>(loadDraft)
-  const [stages, setStages] = useState<Stage[] | null>(null)
+  const [{ guide, undo }, setSaved] = useState<Saved>(load)
   const [help, setHelp] = useState(false)
-  const [error, setError] = useState<string | null>(null)
 
   useEffect(() => {
     try {
-      localStorage.setItem(KEY, JSON.stringify(draft))
+      localStorage.setItem(KEY, JSON.stringify({ guide, undo }))
     } catch {
-      // ignore unavailable storage
+      // storage unavailable
     }
-  }, [draft])
+  }, [guide, undo])
 
-  const run = () => {
-    try {
-      setStages(solve(draft as Cube))
-      setError(null)
-      window.scrollTo(0, 0)
-    } catch {
-      setError("Couldn't solve this cube — please double-check the colours.")
-    }
+  const prompt = guide.queue[0]
+  const answer = (a: Answer) => {
+    const next = advance(guide, a)
+    // Answers that are just taps or choices can be taken back; once moves have
+    // been done on the real cube they can't.
+    const undoable = 'tap' in a || 'choice' in a || 'color' in a
+    setSaved({ guide: next, undo: undoable ? [...undo, guide] : [] })
+    window.scrollTo(0, 0)
   }
+  const restart = () => setSaved({ guide: startGuide(), undo: [] })
+  const stage = STAGES[Math.min(guide.stage, STAGES.length - 1)]
 
   return (
     <main>
@@ -48,9 +54,9 @@ export function App() {
           <span className="logo" aria-hidden /> Cube Coach
         </h1>
         <div className="row">
-          {stages && !help && (
-            <button className="link" onClick={() => setStages(null)}>
-              Edit cube
+          {prompt.kind !== 'orient' && !help && (
+            <button className="link" onClick={() => confirm('Start again from the beginning?') && restart()}>
+              Start over
             </button>
           )}
           <button className="link" onClick={() => setHelp((h) => !h)}>
@@ -61,16 +67,48 @@ export function App() {
 
       {help ? (
         <Notation onClose={() => setHelp(false)} />
-      ) : stages ? (
-        <SolutionView stages={stages} onEdit={() => setStages(null)} />
+      ) : prompt.kind === 'done' ? (
+        <div className="card center">
+          <h2>Solved! 🎉</h2>
+          <CubeIso cube={solvedCube()} />
+          <button className="primary" onClick={restart}>
+            Solve another
+          </button>
+        </div>
       ) : (
         <>
-          <p className="lede">
-            Enter your scrambled cube and get step-by-step beginner instructions — starting from the very first move of the
-            white cross.
-          </p>
-          <CubeInput draft={draft} setDraft={setDraft} onSolve={run} />
-          {error && <p className="errors">{error}</p>}
+          {prompt.kind === 'orient' ? (
+            <p className="lede">
+              Get step-by-step help solving your cube, starting from the white cross. No need to enter every face: the app
+              asks you to find one piece at a time.
+            </p>
+          ) : (
+            <>
+              <ol className="stages" aria-label="Stages">
+                {STAGES.map((s, i) => (
+                  <li key={s.name} className={i === guide.stage ? 'on' : i < guide.stage ? 'done' : ''} title={s.name}>
+                    {i < guide.stage ? '✓' : i + 1}
+                  </li>
+                ))}
+              </ol>
+              <header className="stage-head">
+                <p className="eyebrow">
+                  Stage {guide.stage + 1} of {STAGES.length}
+                </p>
+                <h2>{stage.name}</h2>
+                <p className="muted small">{stage.intro}</p>
+              </header>
+            </>
+          )}
+          <GuideView prompt={prompt} cube={guide.cube} onAnswer={answer} />
+          {undo.length > 0 && (
+            <button
+              className="link"
+              onClick={() => setSaved({ guide: undo[undo.length - 1], undo: undo.slice(0, -1) })}
+            >
+              {prompt.kind === 'moves' ? '‹ Tapped the wrong square? Go back' : '‹ Undo my last answer'}
+            </button>
+          )}
         </>
       )}
     </main>
