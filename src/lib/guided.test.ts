@@ -58,14 +58,25 @@ const cornerInPlace = (c: Cube, slot: number[]) => sameSet(colorsOf(c, slot), sl
 const topCorners = CORNER_SLOTS.filter((s) => s[0] < 9)
 const UFR = CORNER_SLOTS.find((s) => s.includes(8))!
 
-function respond(p: Prompt, cube: Cube): { cube: Cube; answer: Answer } {
+function respond(p: Prompt, cube: Cube, skipMoves = false): { cube: Cube; answer: Answer } {
   switch (p.kind) {
     case 'orient':
-      return { cube, answer: { color: cube[centreIndex('F')] as Color } }
-    case 'locate':
-      return { cube, answer: { tap: findPiece(cube, p.piece)!.find((i) => cube[i] === p.ask)! } }
+      return { cube, answer: { front: cube[centreIndex('F')] as Color, right: cube[centreIndex('R')] as Color } }
+    case 'locate': {
+      // Turn the cube (top stays on top) until the piece shows on the front face.
+      for (let k = 0; k < 4; k++, cube = applyMoves(cube, ['y'])) {
+        const tap = findPiece(cube, p.piece)!.find((i) => i >= 18 && i < 27)
+        if (tap !== undefined)
+          return { cube, answer: { front: cube[centreIndex('F')] as Color, tap, color: cube[tap] as Color } }
+      }
+      throw new Error('piece never reached the front')
+    }
+    case 'check': {
+      const slot = findPiece(cube, p.piece)!
+      return { cube, answer: { choice: slot.every((i) => cube[i] === homeColor(cube, i)) ? 'yes' : 'no' } }
+    }
     case 'moves':
-      return { cube: applyMoves(cube, p.moves), answer: { done: true } }
+      return { cube: skipMoves ? cube : applyMoves(cube, p.moves), answer: { done: true } }
     case 'instruction': {
       const did: Record<string, (c: Cube) => Cube> = {
         'L-back-left': (c) => turnUntil(c, 'U', (x) => x[1] === Y && x[3] === Y),
@@ -109,7 +120,8 @@ function respond(p: Prompt, cube: Cube): { cube: Cube; answer: Answer } {
   }
 }
 
-function run(start: Cube) {
+/** Follow the guide. With `mistake`, the person skips the very first set of moves. */
+function run(start: Cube, mistake = false) {
   let cube = start
   for (const r of ['', 'x', 'x2', "x'", 'z', "z'"]) {
     const t = applyMoves(start, r ? [r] : [])
@@ -117,13 +129,18 @@ function run(start: Cube) {
   }
   let g: Guide = startGuide()
   let prompts = 0
+  let skipped = !mistake
   while (g.queue[0].kind !== 'done') {
-    const { cube: next, answer } = respond(g.queue[0], cube)
+    const p = g.queue[0]
+    const skip = !skipped && p.kind === 'moves'
+    if (skip) skipped = true
+    const { cube: next, answer } = respond(p, cube, skip)
     cube = next
     g = advance(g, answer)
     if (g.queue[0].kind === 'locate') expect(g.queue[0].error).toBeUndefined()
-    // Everything the guide believes must be true of the real cube.
-    g.cube.forEach((c, i) => c !== null && expect(c).toBe(cube[i]))
+    // Everything the guide believes must be true of the real cube (once any mistake is caught).
+    if (g.queue[0].kind !== 'check' && !(mistake && g.queue[0].kind === 'moves'))
+      g.cube.forEach((c, i) => c !== null && expect(c).toBe(cube[i]))
     if (++prompts > 400) throw new Error('Guide did not finish')
   }
   expect(isSolved(cube)).toBe(true)
@@ -142,17 +159,41 @@ describe('guide', () => {
     run(solvedCube())
   })
 
-  it('rejects taps on the wrong kind of square or a solved piece', () => {
-    let g = advance(startGuide(), { color: 'G' })
+  it('recovers when the person skips some moves and says the piece isn’t in place', () => {
+    const r = rng(9)
+    for (let i = 0; i < 50; i++) run(applyMoves(solvedCube(), randomScramble(25, r)), true)
+  })
+
+  it('rejects taps on the wrong kind of square, a wrong colour or a solved piece', () => {
+    let g = advance(startGuide(), { front: 'G', right: 'R' })
     const p = g.queue[0]
     if (p.kind !== 'locate') throw new Error('expected locate')
-    expect(place(g.cube, p.piece, p.ask, 0)).toMatch(/not an edge/) // a corner square
-    expect(place(g.cube, p.piece, p.ask, 4)).toMatch(/not an edge/) // a centre
-    // Say the white-green edge is already home, then try to tap there for the next edge.
-    g = advance(g, { tap: 7 })
+    expect(place(g.cube, p.piece, 'W', 18)).toMatch(/not an edge/) // front corner square
+    expect(place(g.cube, p.piece, 'W', 22)).toMatch(/not an edge/) // front centre
+    expect(place(g.cube, p.piece, 'Y', 19)).toMatch(/doesn’t have yellow/)
+    // Say the white-green edge is already home (green showing at front-top), then tap there again.
+    g = advance(g, { front: 'G', tap: 19, color: 'G' })
     while (g.queue[0].kind !== 'locate') g = advance(g, { done: true })
     const q = g.queue[0]
     if (q.kind !== 'locate') throw new Error('expected locate')
-    expect(place(g.cube, q.piece, q.ask, 7)).toMatch(/already solved/)
+    expect(place(g.cube, q.piece, 'W', 19)).toMatch(/already solved/)
+  })
+
+  it('asks for the same piece again after "not in place"', () => {
+    let g = advance(startGuide(), { front: 'G', right: 'R' })
+    g = advance(g, { front: 'R', tap: 25, color: 'W' }) // white-green edge at bottom-front, red facing
+    while (g.queue[0].kind !== 'check') g = advance(g, { done: true })
+    g = advance(g, { choice: 'no' })
+    const p = g.queue[0]
+    expect(p.kind === 'locate' && p.piece).toEqual(['W', 'G'])
+  })
+
+  it('supports cubes whose colours sit the other way round', () => {
+    const g = advance(startGuide(), { front: 'G', right: 'O' })
+    expect([centreIndex('R'), centreIndex('L')].map((i) => g.cube[i])).toEqual(['O', 'R'])
+    // A mirrored cube: red and orange swapped everywhere.
+    const mirrored = solvedCube().map((c) => (c === 'R' ? 'O' : c === 'O' ? 'R' : c))
+    const r = rng(5)
+    for (let i = 0; i < 50; i++) run(applyMoves(mirrored, randomScramble(25, r)))
   })
 })

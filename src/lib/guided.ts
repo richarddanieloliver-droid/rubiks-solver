@@ -7,6 +7,7 @@
 
 import {
   COLOR_NAMES,
+  FACE_MOVES,
   STICKERS,
   applyMoves,
   centreIndex,
@@ -17,7 +18,6 @@ import {
   knownSolved,
   pieceName,
   slotOf,
-  solvedCube,
   type Color,
   type Cube,
 } from './cube'
@@ -47,13 +47,20 @@ export interface Option {
 
 export type Prompt =
   | { kind: 'orient' }
-  | { kind: 'locate'; title: string; text: string; piece: Color[]; ask: Color; error?: string }
+  | { kind: 'locate'; title: string; text: string; piece: Color[]; error?: string }
+  | { kind: 'check'; piece: Color[]; title: string; text: string }
   | { kind: 'moves'; title: string; text: string; moves: string[] }
   | { kind: 'choice'; id: string; title: string; text: string; options: Option[] }
   | { kind: 'instruction'; id: string; title: string; text: string; pic?: Pic; rotates?: boolean }
   | { kind: 'done' }
 
-export type Answer = { color: Color } | { tap: number } | { choice: string } | { done: true }
+export type Answer =
+  /** Setup: the centre facing you and the one on your right (white on top). */
+  | { front: Color; right: Color }
+  /** A located piece: the centre facing you, the front-face square tapped, and that square's colour. */
+  | { front: Color; tap: number; color: Color }
+  | { choice: string }
+  | { done: true }
 
 export interface Guide {
   stage: number
@@ -68,17 +75,17 @@ export const STAGES = [
   {
     name: 'White cross',
     goal: 'A white cross on top, each edge’s other colour matching the centre beside it.',
-    intro: 'Hold the cube with white on top. For each white edge, find it on your cube, tap where it is, then follow the moves.',
+    intro: 'Keep white on top. For each white edge: turn the cube until it’s facing you, tap it, then follow the moves.',
   },
   {
     name: 'White corners',
     goal: 'The whole white layer solved.',
-    intro: 'White goes on the bottom now. For each white corner: find it, tap where it is, follow the moves.',
+    intro: 'White goes on the bottom now. For each white corner: turn the cube until it’s facing you, tap it, follow the moves.',
   },
   {
     name: 'Middle layer',
     goal: 'The bottom two layers solved.',
-    intro: 'Now the four middle edges — the ones with no white or yellow. Find each, tap it, follow the moves.',
+    intro: 'Now the four middle edges — the ones with no white or yellow. Turn each to face you, tap it, follow the moves.',
   },
   {
     name: 'Yellow cross',
@@ -107,29 +114,44 @@ const name = (c: Color) => COLOR_NAMES[c]
 /** Side centre colours in order front, right, back, left. */
 const sides = (cube: Cube) => (['F', 'R', 'B', 'L'] as const).map((f) => cube[centreIndex(f)] as Color)
 
-function centresFacing(front: Color): Cube {
-  let c: Cube = solvedCube().map((x, i) => (i % 9 === 4 ? x : null))
+const OPPOSITE: Record<Color, Color> = { W: 'Y', Y: 'W', G: 'B', B: 'G', R: 'O', O: 'R' }
+
+/** Centres for a cube held white on top with these colours facing you and on your right. */
+export function centresFor(front: Color, right: Color): Cube {
+  const c: Cube = Array(54).fill(null)
+  const set = { U: 'W', D: 'Y', F: front, B: OPPOSITE[front], R: right, L: OPPOSITE[right] } as const
+  for (const [f, col] of Object.entries(set)) c[centreIndex(f as keyof typeof set)] = col
+  return c
+}
+
+/** Turn the whole cube (about the vertical axis) until `front` faces you. */
+export function turnToFront(cube: Cube, front: Color): Cube {
+  let c = cube
   for (let k = 0; k < 4 && c[centreIndex('F')] !== front; k++) c = applyMoves(c, ['y'])
   return c
 }
 
+/** The colours that can be on your right, given what faces you (white on top). */
+export const rightOptions = (front: Color): Color[] =>
+  (['G', 'R', 'B', 'O'] as Color[]).filter((c) => c !== front && c !== OPPOSITE[front])
+
 // ---- Locating pieces ---------------------------------------------------------
 
-function locatePrompt(piece: Color[], ask: Color): Prompt {
+function locatePrompt(piece: Color[], top: Color): Prompt {
   const kind = piece.length === 2 ? 'edge' : 'corner'
   const colours =
     piece.length === 2 ? `${name(piece[0])} and ${name(piece[1])}` : `${name(piece[0])}, ${name(piece[1])} and ${name(piece[2])}`
   return {
     kind: 'locate',
     piece,
-    ask,
     title: `Find the ${pieceName(piece)} ${kind}`,
-    text: `Look for the ${kind} piece with ${colours} on it. Tap where its ${name(ask)} square is.`,
+    text: `Find the ${kind} with ${colours} on it. Keep ${name(top)} on top and turn the whole cube until that piece is on the side facing you.`,
   }
 }
 
 /** Put a located piece into the known cube, or explain why the tap can't be right. */
 export function place(cube: Cube, piece: Color[], ask: Color, tap: number): Cube | string {
+  if (!piece.includes(ask)) return `That piece doesn’t have ${name(ask)} on it.`
   const slot = slotOf(tap)
   if (!slot || slot.length !== piece.length)
     return piece.length === 2
@@ -149,6 +171,20 @@ export function place(cube: Cube, piece: Color[], ask: Color, tap: number): Cube
   return out
 }
 
+const checkPrompt = (piece: Color[]): Prompt => ({
+  kind: 'check',
+  piece,
+  title: 'Check it',
+  text: `Is the ${pieceName(piece)} ${piece.length === 2 ? 'edge' : 'corner'} now where the picture shows?`,
+})
+
+/** Forget where some pieces are so they get asked for again. */
+function forget(cube: Cube, pieces: Color[][]): Cube {
+  const out = cube.slice()
+  for (const p of pieces) findPiece(cube, p)?.forEach((i) => (out[i] = null))
+  return out
+}
+
 const already = (piece: Color[]): Prompt => ({
   kind: 'instruction',
   id: 'already',
@@ -158,6 +194,9 @@ const already = (piece: Color[]): Prompt => ({
 
 // ---- Stage 1: cross, by breadth-first search ---------------------------------
 
+// Back-face turns are the easiest to get wrong, so the cross avoids them.
+const CROSS_MOVES = FACE_MOVES.filter((m) => m[0] !== 'B')
+
 function crossSteps(cube: Cube, piece: Color[]): Prompt[] {
   const known = sides(cube)
     .map((c): Color[] => ['W', c])
@@ -165,6 +204,7 @@ function crossSteps(cube: Cube, piece: Color[]): Prompt[] {
   const moves = bfsStickers(
     known.map((p) => findPiece(cube, p)!.find((i) => cube[i] === 'W')!),
     known.map((p) => homeSlot(cube, p).find((i) => STICKERS[i].face === 'U')!),
+    CROSS_MOVES,
   )
   if (!moves.length) return [already(piece)]
   const keep = known.length > 1 ? ' These moves leave the edges you’ve already placed where they are.' : ''
@@ -172,7 +212,7 @@ function crossSteps(cube: Cube, piece: Color[]): Prompt[] {
     {
       kind: 'moves',
       title: `Place the ${pieceName(piece)} edge`,
-      text: `It’s at the ${describeSlot(findPiece(cube, piece)!)}. These moves bring it to the top with white facing up, next to the ${name(piece[1])} centre.${keep}`,
+      text: `It’s at the ${describeSlot(findPiece(cube, piece)!)}. Hold the cube still (don’t turn the whole cube) and do these moves. They bring it to the top with white facing up, next to the ${name(piece[1])} centre.${keep}`,
       moves,
     },
   ]
@@ -417,7 +457,7 @@ function fill(g: Guide): Guide {
   const { stage, cube } = g
   if (stage <= 2 && g.pieces.length) {
     const piece = g.pieces[0]
-    return { ...g, queue: [locatePrompt(piece, stage === 2 ? piece[0] : 'W')] }
+    return { ...g, queue: [locatePrompt(piece, cube[centreIndex('U')] as Color)] }
   }
   switch (stage) {
     case 0: {
@@ -454,21 +494,42 @@ function fill(g: Guide): Guide {
   }
 }
 
+/** All the pieces of the current stage, in asking order. */
+function stagePieces(g: Guide): Color[][] {
+  const s = sides(g.cube)
+  if (g.stage === 0) return s.map((c): Color[] => ['W', c])
+  if (g.stage === 1) return s.map((c, i): Color[] => ['W', c, s[(i + 1) % 4]])
+  return s.map((c, i): Color[] => [c, s[(i + 1) % 4]])
+}
+
 export function advance(g: Guide, a: Answer): Guide {
   const [p, ...rest] = g.queue
   switch (p.kind) {
     case 'orient': {
-      if (!('color' in a)) return g
-      const cube = centresFacing(a.color)
+      if (!('right' in a)) return g
+      const cube = centresFor(a.front, a.right)
       return fill({ stage: 0, cube, queue: [], pieces: sides(cube).map((c): Color[] => ['W', c]) })
     }
     case 'locate': {
       if (!('tap' in a)) return g
-      const placed = place(g.cube, p.piece, p.ask, a.tap)
+      const turned = turnToFront(g.cube, a.front)
+      const placed = place(turned, p.piece, a.color, a.tap)
       if (typeof placed === 'string') return { ...g, queue: [{ ...p, error: placed }, ...rest] }
       const steps =
         g.stage === 0 ? crossSteps(placed, p.piece) : g.stage === 1 ? cornerSteps(placed, p.piece) : middleSteps(placed, p.piece)
-      return fill({ ...g, cube: placed, pieces: g.pieces.slice(1), queue: [...steps, ...rest] })
+      const withCheck = steps[0].kind === 'instruction' ? steps : [...steps, checkPrompt(p.piece)]
+      return fill({ ...g, cube: placed, pieces: g.pieces.slice(1), queue: [...withCheck, ...rest] })
+    }
+    case 'check': {
+      if (!('choice' in a)) return g
+      if (a.choice === 'yes') return fill({ ...g, queue: rest })
+      // Ask again for this piece, or for every piece placed so far in this stage.
+      const key = (q: Color[]) => [...q].sort().join()
+      const redo = a.choice === 'others' ? stagePieces(g).filter((q) => findPiece(g.cube, q)) : [p.piece]
+      // This piece first, then any others to redo, then the ones not yet placed.
+      const first = [p.piece, ...redo.filter((q) => key(q) !== key(p.piece))]
+      const pieces = [...first, ...g.pieces.filter((q) => !first.some((f) => key(f) === key(q)))]
+      return fill({ ...g, cube: forget(g.cube, redo), pieces, queue: rest })
     }
     case 'moves':
       return fill({ ...g, cube: applyMoves(g.cube, p.moves), queue: rest })

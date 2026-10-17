@@ -1,12 +1,25 @@
 import { useState } from 'react'
-import { COLOR_HEX, COLOR_NAMES, applyMove, slotOf, type Color, type Cube } from '../lib/cube'
-import type { Answer, Prompt } from '../lib/guided'
+import {
+  COLOR_HEX,
+  COLOR_NAMES,
+  MOVES,
+  STICKERS,
+  applyMove,
+  applyMoves,
+  centreIndex,
+  findPiece,
+  slotOf,
+  type Color,
+  type Cube,
+} from '../lib/cube'
+import { centresFor, rightOptions, turnToFront, type Answer, type Prompt } from '../lib/guided'
 import { describeMove } from '../lib/notation'
 import { CubeIso } from './CubeIso'
 import { TopPic } from './TopPic'
 
 type MovesPrompt = Extract<Prompt, { kind: 'moves' }>
 type LocatePrompt = Extract<Prompt, { kind: 'locate' }>
+type CheckPrompt = Extract<Prompt, { kind: 'check' }>
 
 interface Props {
   prompt: Prompt
@@ -22,6 +35,8 @@ export function GuideView({ prompt, cube, onAnswer }: Props) {
       return <Locate key={prompt.title + (prompt.error ?? '')} prompt={prompt} cube={cube} onAnswer={onAnswer} />
     case 'moves':
       return <MovePlayer key={prompt.title + prompt.moves.join()} prompt={prompt} cube={cube} onDone={() => onAnswer({ done: true })} />
+    case 'check':
+      return <Check prompt={prompt} cube={cube} onAnswer={onAnswer} />
     case 'choice':
       return (
         <div className="card">
@@ -58,40 +73,76 @@ export function GuideView({ prompt, cube, onAnswer }: Props) {
 }
 
 const SIDES: Color[] = ['G', 'R', 'B', 'O']
+const cap = (c: Color) => COLOR_NAMES[c][0].toUpperCase() + COLOR_NAMES[c].slice(1)
 
-function Orient({ onAnswer }: { onAnswer: (a: Answer) => void }) {
+function ColourChips({ colours, value, onPick }: { colours: Color[]; value?: Color | null; onPick: (c: Color) => void }) {
   return (
-    <div className="card">
-      <h3>Hold your cube with white on top</h3>
-      <p>Turn the whole cube until the white centre square is on top. Which colour centre is facing you?</p>
-      <div className="choices">
-        {SIDES.map((c) => (
-          <button key={c} className="choice colour" onClick={() => onAnswer({ color: c })}>
-            <span className="swatch" style={{ background: COLOR_HEX[c] }} />
-            {COLOR_NAMES[c][0].toUpperCase() + COLOR_NAMES[c].slice(1)}
-          </button>
-        ))}
-      </div>
-      <p className="muted small">
-        Keep holding it this way. Every picture in the app shows the cube the way you’re holding it.
-      </p>
+    <div className="chips">
+      {colours.map((c) => (
+        <button key={c} className={`chip${value === c ? ' on' : ''}`} onClick={() => onPick(c)} aria-pressed={value === c}>
+          <span className="swatch" style={{ background: COLOR_HEX[c] }} />
+          {cap(c)}
+        </button>
+      ))}
     </div>
   )
 }
 
-const VIEWS = [
-  { view: undefined, label: 'Front, top & right', hint: 'as you’re holding it' },
-  { view: 'y2', label: 'Back, top & left', hint: 'turn the cube round to look' },
-  { view: 'x', label: 'Bottom', hint: 'tip the top away from you to look underneath' },
-]
+function Orient({ onAnswer }: { onAnswer: (a: Answer) => void }) {
+  const [front, setFront] = useState<Color | null>(null)
+  const [right, setRight] = useState<Color | null>(null)
+  return (
+    <div className="card">
+      <h3>1. Hold the cube with the white centre on top</h3>
+      <p>The centre is the middle square of a face. It never moves, so it tells you which colour that side will be.</p>
+
+      <h3 className="spaced">2. Which centre is facing you?</h3>
+      <ColourChips
+        colours={SIDES}
+        value={front}
+        onPick={(c) => {
+          setFront(c)
+          setRight(null)
+        }}
+      />
+
+      {front && (
+        <>
+          <h3 className="spaced">3. Which centre is on your right?</h3>
+          <ColourChips colours={rightOptions(front)} value={right} onPick={setRight} />
+        </>
+      )}
+
+      {front && right && (
+        <>
+          <div className="center pic-wrap">
+            <CubeIso cube={centresFor(front, right)} size={170} />
+          </div>
+          <p className="center">
+            Your cube should look like this from where you are: <b>white</b> on top, <b>{COLOR_NAMES[front]}</b> facing you,{' '}
+            <b>{COLOR_NAMES[right]}</b> on the right. Keep holding it this way.
+          </p>
+          <button className="primary wide" onClick={() => onAnswer({ front, right })}>
+            Looks right — start
+          </button>
+        </>
+      )}
+    </div>
+  )
+}
 
 function Locate({ prompt, cube, onAnswer }: { prompt: LocatePrompt; cube: Cube; onAnswer: (a: Answer) => void }) {
-  const [selected, setSelected] = useState<number | null>(null)
+  const [front, setFront] = useState<Color>(cube[centreIndex('F')] as Color)
+  const [tap, setTap] = useState<number | null>(null)
+  const [color, setColor] = useState<Color | null>(null)
+  const turned = turnToFront(cube, front)
+  const sides = (['F', 'R', 'B', 'L'] as const).map((f) => cube[centreIndex(f)] as Color)
   const size = prompt.piece.length
   const canTap = (i: number) => {
     const slot = slotOf(i)
-    return !!slot && slot.length === size && slot.every((j) => cube[j] === null)
+    return !!slot && slot.length === size && slot.every((j) => turned[j] === null)
   }
+  const top = COLOR_NAMES[cube[centreIndex('U')] as Color]
   return (
     <div className="card">
       <h3>{prompt.title}</h3>
@@ -101,32 +152,94 @@ function Locate({ prompt, cube, onAnswer }: { prompt: LocatePrompt; cube: Cube; 
           {prompt.error}
         </p>
       )}
-      <div className="tap-views">
-        {VIEWS.map((v) => (
-          <figure key={v.label}>
-            <CubeIso
-              cube={cube}
-              view={v.view}
-              size={v.view ? 150 : 210}
-              canTap={canTap}
-              onTap={setSelected}
-              selected={selected}
-              selectedColor={prompt.ask}
-            />
-            <figcaption>
-              <b>{v.label}</b>
-              <br />
-              {v.hint}
-            </figcaption>
-          </figure>
-        ))}
+
+      <p className="step-label">Which centre is facing you now?</p>
+      <ColourChips
+        colours={sides}
+        value={front}
+        onPick={(c) => {
+          setFront(c)
+          setTap(null)
+          setColor(null)
+        }}
+      />
+
+      <p className="step-label">Tap where the piece is on the face in front of you</p>
+      <div className="front-face">
+        <span className="muted small">{top} on top</span>
+        <div className="front-grid">
+          {Array.from({ length: 9 }, (_, k) => {
+            const i = 18 + k
+            const known = turned[i]
+            const ok = canTap(i)
+            return (
+              <button
+                key={i}
+                className={`sq${tap === i ? ' sel' : ''}${ok ? ' tap' : ''}`}
+                style={{ background: tap === i && color ? COLOR_HEX[color] : known ? COLOR_HEX[known] : undefined }}
+                disabled={!ok}
+                onClick={() => {
+                  setTap(i)
+                  setColor(null)
+                }}
+                aria-label={known ? COLOR_NAMES[known] : `square ${k + 1}`}
+              />
+            )
+          })}
+        </div>
       </div>
-      <p className="muted small">
-        Grey squares are ones the app doesn’t know yet. Coloured ones are already solved.
-      </p>
-      <button className="primary wide" disabled={selected === null} onClick={() => selected !== null && onAnswer({ tap: selected })}>
-        {selected === null ? `Tap where the ${COLOR_NAMES[prompt.ask]} square is` : 'That’s where it is'}
+
+      {tap !== null && (
+        <>
+          <p className="step-label">What colour is that square?</p>
+          <ColourChips colours={prompt.piece} value={color} onPick={setColor} />
+        </>
+      )}
+
+      <button
+        className="primary wide"
+        disabled={tap === null || !color}
+        onClick={() => tap !== null && color && onAnswer({ front, tap, color })}
+      >
+        {tap === null ? 'Tap the piece’s square' : !color ? 'Pick the square’s colour' : 'Show me the moves'}
       </button>
+    </div>
+  )
+}
+
+const VISIBLE_FACES = ['U', 'F', 'R']
+
+function Check({ prompt, cube, onAnswer }: { prompt: CheckPrompt; cube: Cube; onAnswer: (a: Answer) => void }) {
+  // Turn the picture (not the cube) so every square of the piece can be seen.
+  const slot = findPiece(cube, prompt.piece) ?? []
+  const view = [undefined, 'y', "y'", 'y2'].find((v) => {
+    const perm = v ? MOVES[v] : null
+    return slot.every((i) => VISIBLE_FACES.includes(STICKERS[perm ? perm[i] : i].face))
+  })
+  const shownFront = view ? applyMoves(cube, [view])[centreIndex('F')] : null
+  return (
+    <div className="card">
+      <h3>{prompt.title}</h3>
+      <p>{prompt.text}</p>
+      <figure className="center pic-wrap">
+        <CubeIso cube={cube} view={view} size={200} />
+        {shownFront && (
+          <figcaption className="muted small">
+            Picture turned so you can see the whole piece ({COLOR_NAMES[shownFront]} at the front). Don’t turn your cube.
+          </figcaption>
+        )}
+      </figure>
+      <div className="choices one-col">
+        <button className="choice primary" onClick={() => onAnswer({ choice: 'yes' })}>
+          Yes, it’s in place
+        </button>
+        <button className="choice" onClick={() => onAnswer({ choice: 'no' })}>
+          No — I’ll find it again
+        </button>
+        <button className="choice" onClick={() => onAnswer({ choice: 'others' })}>
+          No, and pieces I’d already placed have moved too
+        </button>
+      </div>
     </div>
   )
 }

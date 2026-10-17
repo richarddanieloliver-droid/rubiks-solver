@@ -416,3 +416,81 @@ button.wide {
 .tappable:hover {
   filter: brightness(1.1);
 }
+
+h3.spaced {
+  margin-top: 16px;
+}
+
+.step-label {
+  margin: 16px 0 6px !important;
+  font-weight: 600;
+}
+
+.chips {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 8px;
+  margin-top: 8px;
+}
+
+.chip {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  padding: 10px 14px;
+  font-weight: 600;
+}
+
+.chip.on {
+  border-color: var(--accent);
+  box-shadow: 0 0 0 2px var(--accent) inset;
+}
+
+.chip .swatch {
+  width: 20px;
+  height: 20px;
+  border-radius: 5px;
+  border: 1px solid rgba(0, 0, 0, 0.25);
+}
+
+.front-face {
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  gap: 4px;
+}
+
+.front-grid {
+  display: grid;
+  grid-template-columns: repeat(3, 1fr);
+  gap: 6px;
+  padding: 8px;
+  background: var(--cube-body);
+  border-radius: 14px;
+  width: min(64vw, 240px);
+  aspect-ratio: 1;
+}
+
+.front-grid .sq {
+  border: none;
+  border-radius: 8px;
+  padding: 0;
+  background: var(--unknown);
+}
+
+.front-grid .sq:disabled {
+  opacity: 1;
+  cursor: default;
+}
+
+.front-grid .sq.tap {
+  box-shadow: inset 0 0 0 3px var(--tap-outline);
+}
+
+.front-grid .sq.sel {
+  box-shadow: 0 0 0 4px var(--accent);
+}
+
+.choices.one-col {
+  grid-template-columns: 1fr;
+}

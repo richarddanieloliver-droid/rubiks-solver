@@ -4,7 +4,7 @@
 import { FACE_MOVES, MOVES, applyMoves, type Cube } from './cube'
 
 /** Shortest face-turn sequence moving each tracked sticker to its goal sticker. */
-export function bfsStickers(from: number[], to: number[]): string[] {
+export function bfsStickers(from: number[], to: number[], moveSet = FACE_MOVES): string[] {
   const enc = (a: number[]) => a.reduce((k, v) => k * 64 + v, 0)
   const goal = enc(to)
   const startKey = enc(from)
@@ -15,7 +15,7 @@ export function bfsStickers(from: number[], to: number[]): string[] {
     const next: number[][] = []
     for (const s of frontier) {
       const sk = enc(s)
-      for (const m of FACE_MOVES) {
+      for (const m of moveSet) {
         const t = s.map((i) => MOVES[m][i])
         const k = enc(t)
         if (parent.has(k)) continue

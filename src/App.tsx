@@ -5,7 +5,7 @@ import { GuideView } from './components/GuideView'
 import { Notation } from './components/Notation'
 import { solvedCube } from './lib/cube'
 
-const KEY = 'rubiks-guide'
+const KEY = 'rubiks-guide-v2'
 
 interface Saved {
   guide: Guide
@@ -40,7 +40,7 @@ export function App() {
     const next = advance(guide, a)
     // Answers that are just taps or choices can be taken back; once moves have
     // been done on the real cube they can't.
-    const undoable = 'tap' in a || 'choice' in a || 'color' in a
+    const undoable = !('done' in a)
     setSaved({ guide: next, undo: undoable ? [...undo, guide] : [] })
     window.scrollTo(0, 0)
   }
